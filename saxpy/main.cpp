@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <getopt.h>
 #include <string>
+#include <iostream>
 
 void saxpyCuda(int N, float alpha, float* x, float* y, float* result);
 void printCudaInfo();
@@ -66,7 +67,16 @@ int main(int argc, char** argv)
     for (int i=0; i<3; i++) {
       saxpyCuda(N, alpha, xarray, yarray, resultarray);
     }
-
+    for (int j = 0; j < N; ++j) {
+        if (resultarray[j] != alpha * xarray[j] + yarray[j]) {
+            std::cout << "There is an error in the calculation!\n";
+            std::cout << "Index: " << j << "\n";
+            std::cout << "Expected value: " << (alpha * xarray[j] + yarray[j]) << "\n";
+            std::cout << "Got value: " << (resultarray[j]) << "\n";
+            break;
+        }
+    }
+    
     delete [] xarray;
     delete [] yarray;
     delete [] resultarray;
