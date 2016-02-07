@@ -42,6 +42,8 @@ public:
 
     void clearImage();
 
+    void hostRenderCircles(int index);
+
     void advanceAnimation();
 
     void render();

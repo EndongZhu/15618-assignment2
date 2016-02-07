@@ -56,7 +56,9 @@ __constant__ float  cuConstColorRamp[COLOR_MAP_SIZE][3];
 #include "noiseCuda.cu_inl"
 #include "lookupColor.cu_inl"
 
-
+static inline int updiv(int n, int d) {
+    return (n+d-1)/d;
+}
 // kernelClearImageSnowflake -- (CUDA device code)
 //
 // Clear the image, setting the image to the white-gray gradation that
@@ -427,6 +429,23 @@ __global__ void kernelRenderCircles(int index) {
     }
 }
 
+__global__ void kernelShadePixels(int index,float3 p,int screenMinX, int screenMaxX, int screenMinY, int screenMaxY, int imageWidth,int imageHeight){
+    float invWidth = 1.f / imageWidth;
+    float invHeight = 1.f / imageHeight;
+    int pixelY = (blockIdx.y * blockDim.y) + threadIdx.y + screenMinY;
+    int pixelX = (blockIdx.x * blockDim.x) + threadIdx.x + screenMinX;
+    if (pixelY>=screenMaxY || pixelX>=screenMaxX)
+    {
+        return;
+    }
+    else{
+        float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth + screenMinX)])+(pixelX- screenMinX);
+        float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
+                                             invHeight * (static_cast<float>(pixelY) + 0.5f));
+        shadePixel(index, pixelCenterNorm, p, imgPtr);
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////
 
 
@@ -648,6 +667,56 @@ CudaRenderer::advanceAnimation() {
 }
 
 void
+CudaRenderer::hostRenderCircles(int index) {
+
+    // int index = blockIdx.x * blockDim.x + threadIdx.x;
+    // printf("In hostRenderCircles %d\n",index);
+    if (index >= numCircles)
+        return;
+
+    int index3 = 3 * index;
+
+    // read position and radius
+    float3 p = *(float3*)(&position[index3]);
+    float  rad = radius[index];
+
+    // compute the bounding box of the circle. The bound is in integer
+    // screen coordinates, so it's clamped to the edges of the screen.
+    short imageWidth = image->width;
+    short imageHeight = image->height;
+    short minX = static_cast<short>(imageWidth * (p.x - rad));
+    short maxX = static_cast<short>(imageWidth * (p.x + rad)) + 1;
+    short minY = static_cast<short>(imageHeight * (p.y - rad));
+    short maxY = static_cast<short>(imageHeight * (p.y + rad)) + 1;
+
+    // a bunch of clamps.  Is there a CUDA built-in for this?
+    short screenMinX = (minX > 0) ? ((minX < imageWidth) ? minX : imageWidth) : 0;
+    short screenMaxX = (maxX > 0) ? ((maxX < imageWidth) ? maxX : imageWidth) : 0;
+    short screenMinY = (minY > 0) ? ((minY < imageHeight) ? minY : imageHeight) : 0;
+    short screenMaxY = (maxY > 0) ? ((maxY < imageHeight) ? maxY : imageHeight) : 0;
+
+
+
+    dim3 blockDim(16, 16);
+
+
+    int Ylimit = screenMaxY- screenMinY;
+    int Xlimit = screenMaxX - screenMinX;
+    dim3 gridDim(updiv(Xlimit,blockDim.x),updiv(Ylimit,blockDim.y));
+    // dim3 gridDim((numCircles + blockDim.x - 1) / blockDim.x);
+    kernelShadePixels<<<gridDim,blockDim>>>(index, p, screenMinX,screenMaxX, screenMinY, screenMaxY, imageWidth,imageHeight);
+    // for all pixels in the bonding box
+    // for (int pixelY=screenMinY; pixelY<screenMaxY; pixelY++) {
+    //     float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth + screenMinX)]);
+    //     for (int pixelX=screenMinX; pixelX<screenMaxX; pixelX++) {
+    //         float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
+    //                                              invHeight * (static_cast<float>(pixelY) + 0.5f));
+    //         shadePixel(index, pixelCenterNorm, p, imgPtr);
+    //         imgPtr++;
+    //     }
+    // }
+}
+void
 CudaRenderer::render() {
 
     // 256 threads per block is a healthy number
@@ -657,11 +726,11 @@ CudaRenderer::render() {
 
     // kernelRenderCircles<<<gridDim, blockDim>>>();
 
-
+    
     for (int i = 0; i < numCircles; ++i)
     {
-        kernelRenderCircles<<<1,1>>>(i);
-        cudaThreadSynchronize();
+        hostRenderCircles(i);
+        // printf("for loop %d\n",i );
 
     }
 }
