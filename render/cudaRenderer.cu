@@ -384,9 +384,9 @@ shadePixel(int circleIndex, float2 pixelCenter, float3 p, float4* imagePtr) {
 // Each thread renders a circle.  Since there is no protection to
 // ensure order of update or mutual exclusion on the output image, the
 // resulting image will be incorrect.
-__global__ void kernelRenderCircles() {
+__global__ void kernelRenderCircles(int index) {
 
-    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    // int index = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (index >= cuConstRendererParams.numCircles)
         return;
@@ -652,8 +652,16 @@ CudaRenderer::render() {
 
     // 256 threads per block is a healthy number
     dim3 blockDim(256, 1);
+    // dim3 blockDim(1, 1)
     dim3 gridDim((numCircles + blockDim.x - 1) / blockDim.x);
 
-    kernelRenderCircles<<<gridDim, blockDim>>>();
-    cudaThreadSynchronize();
+    // kernelRenderCircles<<<gridDim, blockDim>>>();
+
+
+    for (int i = 0; i < numCircles; ++i)
+    {
+        kernelRenderCircles<<<1,1>>>(i);
+        cudaThreadSynchronize();
+
+    }
 }
