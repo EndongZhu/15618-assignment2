@@ -13,6 +13,7 @@
 #include "noise.h"
 #include "sceneLoader.h"
 #include "util.h"
+#include "exclusiveScan.cu_inl"
 
 ////////////////////////////////////////////////////////////////////////////////////////
 // Putting all the cuda kernels here
@@ -439,7 +440,7 @@ __global__ void kernelRenderCircles() {
     int blockXmax = (blockIdx.x * blockDim.x) + blockDim.x;
 
     int circlesPerThread = cuConstRendererParams.numCircles / 64; //TODO: make this parametrized
-    int threadIndex =  (threadIdx.y * 8) + threadIdx.x);
+    int threadIndex =  (threadIdx.y * 8) + threadIdx.x;
     int checkCircleStart = threadIndex * circlesPerThread;
     int checkCircleEnd = checkCircleStart + circlesPerThread;
 
@@ -448,8 +449,8 @@ __global__ void kernelRenderCircles() {
     float invWidth = 1.f / imageWidth;
     float invHeight = 1.f / imageHeight;
 
-    int circleAdded = 0;
-    int circleprocessed[cuConstRendererParams.numCircles/(96*96)]; //TODO: Tune
+    uint circleAdded = 0;
+    uint circleprocessed[cuConstRendererParams.numCircles/(96*96)]; //TODO: Tune
 
     for (int index =checkCircleStart ; index < checkCircleEnd; index++)
 
@@ -479,19 +480,21 @@ __global__ void kernelRenderCircles() {
           circleAdded++; //Add circle index to some array
         }
     }
-    int shared_no_of_circles[63];//Shared
+    __shared__ uint shared_no_of_circles[num_of_threads_in_block];//Shared
+    uint output[num_of_threads_in_block];
+    volatile uint scratch[2*num_of_threads_in_block-1];
     shared_no_of_circles[threadIndex] = circleAdded;
     __syncthreads();
 
     //TODO exclusive scan on shared_no_of_circles to get total count
-
+    sharedMemExclusiveScan(threadIndex, shared_no_of_circles, output, scratch, num_of_threads_in_block);
     __syncthreads();
-    int totalCirclesInBox = output[63] + shared_no_of_circles[63];
+    int totalCirclesInBox = output[num_of_threads_in_block] + shared_no_of_circles[num_of_threads_in_block];
 
     //Build list of shared indexes of circles
-    int all_circles_in_box[totalCirclesInBox]; //Shared
+    __shared__ int all_circles_in_box[totalCirclesInBox]; //Shared
     int offset = output[threadIndex];
-    for (int i = 0; i<circleAdded; i++) {
+    for (int i = 0; i < circleAdded; i++) {
       all_circles_in_box[offset+i] = circleProcessed[i];
     }
      __syncthreads();
