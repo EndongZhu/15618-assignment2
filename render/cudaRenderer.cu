@@ -326,7 +326,7 @@ shadePixel(int circleIndex, float2 pixelCenter, float3 p, float4* imagePtr) {
     float diffY = p.y - pixelCenter.y;
     float pixelDist = diffX * diffX + diffY * diffY;
 
-    float rad = cuConstRendererParams.radius[circleIndex];;
+    float rad = cuConstRendererParams.radius[circleIndex];
     float maxDist = rad * rad;
 
     // circle does not contribute to the image
@@ -386,45 +386,56 @@ shadePixel(int circleIndex, float2 pixelCenter, float3 p, float4* imagePtr) {
 // Each thread renders a circle.  Since there is no protection to
 // ensure order of update or mutual exclusion on the output image, the
 // resulting image will be incorrect.
-__global__ void kernelRenderCircles(int index) {
+__global__ void kernelRenderCircles() {
 
     // int index = blockIdx.x * blockDim.x + threadIdx.x;
+    
 
-    if (index >= cuConstRendererParams.numCircles)
-        return;
+    // if (index >= cuConstRendererParams.numCircles)
+    //     return;
+    // printf("%d index\n",blockIdx.x * blockDim.x + threadIdx.x);
 
-    int index3 = 3 * index;
+    for (int index = 0; index < cuConstRendererParams.numCircles; ++index)
+    {
+        int index3 = 3 * index;
 
-    // read position and radius
-    float3 p = *(float3*)(&cuConstRendererParams.position[index3]);
-    float  rad = cuConstRendererParams.radius[index];
+        // read position and radius
+        float3 p = *(float3*)(&cuConstRendererParams.position[index3]);
+        float  rad = cuConstRendererParams.radius[index];
 
-    // compute the bounding box of the circle. The bound is in integer
-    // screen coordinates, so it's clamped to the edges of the screen.
-    short imageWidth = cuConstRendererParams.imageWidth;
-    short imageHeight = cuConstRendererParams.imageHeight;
-    short minX = static_cast<short>(imageWidth * (p.x - rad));
-    short maxX = static_cast<short>(imageWidth * (p.x + rad)) + 1;
-    short minY = static_cast<short>(imageHeight * (p.y - rad));
-    short maxY = static_cast<short>(imageHeight * (p.y + rad)) + 1;
+        // compute the bounding box of the circle. The bound is in integer
+        // screen coordinates, so it's clamped to the edges of the screen.
+        short imageWidth = cuConstRendererParams.imageWidth;
+        short imageHeight = cuConstRendererParams.imageHeight;
+        short minX = static_cast<short>(imageWidth * (p.x - rad));
+        short maxX = static_cast<short>(imageWidth * (p.x + rad)) + 1;
+        short minY = static_cast<short>(imageHeight * (p.y - rad));
+        short maxY = static_cast<short>(imageHeight * (p.y + rad)) + 1;
 
-    // a bunch of clamps.  Is there a CUDA built-in for this?
-    short screenMinX = (minX > 0) ? ((minX < imageWidth) ? minX : imageWidth) : 0;
-    short screenMaxX = (maxX > 0) ? ((maxX < imageWidth) ? maxX : imageWidth) : 0;
-    short screenMinY = (minY > 0) ? ((minY < imageHeight) ? minY : imageHeight) : 0;
-    short screenMaxY = (maxY > 0) ? ((maxY < imageHeight) ? maxY : imageHeight) : 0;
+        // a bunch of clamps.  Is there a CUDA built-in for this?
+        short screenMinX = (minX > 0) ? ((minX < imageWidth) ? minX : imageWidth) : 0;
+        short screenMaxX = (maxX > 0) ? ((maxX < imageWidth) ? maxX : imageWidth) : 0;
+        short screenMinY = (minY > 0) ? ((minY < imageHeight) ? minY : imageHeight) : 0;
+        short screenMaxY = (maxY > 0) ? ((maxY < imageHeight) ? maxY : imageHeight) : 0;
 
-    float invWidth = 1.f / imageWidth;
-    float invHeight = 1.f / imageHeight;
+        float invWidth = 1.f / imageWidth;
+        float invHeight = 1.f / imageHeight;
 
-    // for all pixels in the bonding box
-    for (int pixelY=screenMinY; pixelY<screenMaxY; pixelY++) {
-        float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth + screenMinX)]);
-        for (int pixelX=screenMinX; pixelX<screenMaxX; pixelX++) {
+        int pixelY = (blockIdx.y * blockDim.y) + threadIdx.y;
+        int pixelX = (blockIdx.x * blockDim.x) + threadIdx.x;
+        // for all pixels in the bonding box
+
+        if (pixelX<screenMaxX && pixelX>=screenMinX && pixelY<screenMaxY && pixelY>=screenMinY)
+        {
+            printf("%d %d\n",pixelX,pixelY);
+            float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth+pixelX)]);
             float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
                                                  invHeight * (static_cast<float>(pixelY) + 0.5f));
-            shadePixel(index, pixelCenterNorm, p, imgPtr);
-            imgPtr++;
+            shadePixel(index, pixelCenterNorm, p, imgPtr);    
+        }
+        else
+        {   
+            return;
         }
     }
 }
@@ -558,6 +569,7 @@ CudaRenderer::setup() {
     cudaMalloc(&cudaDeviceColor, sizeof(float) * 3 * numCircles);
     cudaMalloc(&cudaDeviceRadius, sizeof(float) * numCircles);
     cudaMalloc(&cudaDeviceImageData, sizeof(float) * 4 * image->width * image->height);
+    // cudaMalloc(&cudaDeviceBoundingBoxes, sizeof(float)*z )
 
     cudaMemcpy(cudaDevicePosition, position, sizeof(float) * 3 * numCircles, cudaMemcpyHostToDevice);
     cudaMemcpy(cudaDeviceVelocity, velocity, sizeof(float) * 3 * numCircles, cudaMemcpyHostToDevice);
@@ -696,9 +708,7 @@ CudaRenderer::hostRenderCircles(int index) {
     short screenMaxY = (maxY > 0) ? ((maxY < imageHeight) ? maxY : imageHeight) : 0;
 
 
-
     dim3 blockDim(16, 16);
-
 
     int Ylimit = screenMaxY- screenMinY;
     int Xlimit = screenMaxX - screenMinX;
@@ -720,17 +730,15 @@ void
 CudaRenderer::render() {
 
     // 256 threads per block is a healthy number
-    dim3 blockDim(256, 1);
+    dim3 blockDim(16, 16);
+
+
+    printf("%d %d\n", image->width,image->height);
+    dim3 gridDim(updiv(image->width,blockDim.x),updiv(image->height,blockDim.y));
     // dim3 blockDim(1, 1)
-    dim3 gridDim((numCircles + blockDim.x - 1) / blockDim.x);
 
-    // kernelRenderCircles<<<gridDim, blockDim>>>();
-
+    // dim3 gridDim((numCircles + blockDim.x - 1) / blockDim.x);
+    printf("%d %d\n",gridDim.x,gridDim.y );
+    kernelRenderCircles<<<gridDim, blockDim>>>();
     
-    for (int i = 0; i < numCircles; ++i)
-    {
-        hostRenderCircles(i);
-        // printf("for loop %d\n",i );
-
-    }
 }
