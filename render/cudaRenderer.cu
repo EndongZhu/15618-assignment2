@@ -394,7 +394,9 @@ __global__ void kernelRenderCircles() {
     // if (index >= cuConstRendererParams.numCircles)
     //     return;
     // printf("%d index\n",blockIdx.x * blockDim.x + threadIdx.x);
-
+    int pixelY = (blockIdx.y * blockDim.y) + threadIdx.y;
+    int pixelX = (blockIdx.x * blockDim.x) + threadIdx.x;
+    // printf("%d %d %d %d\n",blockIdx.x, blockIdx.y, threadIdx.x, threadIdx.y);
     for (int index = 0; index < cuConstRendererParams.numCircles; ++index)
     {
         int index3 = 3 * index;
@@ -421,22 +423,18 @@ __global__ void kernelRenderCircles() {
         float invWidth = 1.f / imageWidth;
         float invHeight = 1.f / imageHeight;
 
-        int pixelY = (blockIdx.y * blockDim.y) + threadIdx.y;
-        int pixelX = (blockIdx.x * blockDim.x) + threadIdx.x;
+
+
         // for all pixels in the bonding box
 
         if (pixelX<screenMaxX && pixelX>=screenMinX && pixelY<screenMaxY && pixelY>=screenMinY)
         {
-            printf("%d %d\n",pixelX,pixelY);
             float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth+pixelX)]);
             float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
                                                  invHeight * (static_cast<float>(pixelY) + 0.5f));
             shadePixel(index, pixelCenterNorm, p, imgPtr);    
         }
-        else
-        {   
-            return;
-        }
+        
     }
 }
 
@@ -740,5 +738,7 @@ CudaRenderer::render() {
     // dim3 gridDim((numCircles + blockDim.x - 1) / blockDim.x);
     printf("%d %d\n",gridDim.x,gridDim.y );
     kernelRenderCircles<<<gridDim, blockDim>>>();
+
+    // cudaThreadSynchronize();
     
 }
