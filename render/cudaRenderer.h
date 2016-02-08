@@ -26,6 +26,8 @@ private:
     float* cudaDeviceColor;
     float* cudaDeviceRadius;
     float* cudaDeviceImageData;
+    float* cudaDeviceBoundingBoxes;
+    float* cudaDevicePresent;
 
 public:
 

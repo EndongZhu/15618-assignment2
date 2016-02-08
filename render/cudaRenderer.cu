@@ -31,6 +31,8 @@ struct GlobalConstants {
     int imageWidth;
     int imageHeight;
     float* imageData;
+    float* BB;
+    float* Present;
 };
 
 // Global variable that is in scope, but read-only, for all cuda
@@ -511,6 +513,54 @@ __global__ void kernelRenderCirclesSnow() {
 
 }
 
+__global__ void kernelCircleBB() {
+   int index = (blockIdx.x * blockDim.x) + threadIdx.x;
+   int index3 = 3 * index;
+   int index4 = 4 * index;
+
+   // read position and radius
+   float3 p = *(float3*)(&cuConstRendererParams.position[index3]);
+   float  rad = cuConstRendererParams.radius[index];
+   //
+   float4 *BoundingBox = (float4*)(&cuConstRendererParams.BB[index4]);
+
+   // compute the bounding box of the circle. The bound is in integer
+   // screen coordinates, so it's clamped to the edges of the screen.
+   short imageWidth = cuConstRendererParams.imageWidth;
+   short imageHeight = cuConstRendererParams.imageHeight;
+   short minX = static_cast<short>(imageWidth * (p.x - rad));
+   short maxX = static_cast<short>(imageWidth * (p.x + rad)) + 1;
+   short minY = static_cast<short>(imageHeight * (p.y - rad));
+   short maxY = static_cast<short>(imageHeight * (p.y + rad)) + 1;
+
+   // a bunch of clamps.  Is there a CUDA built-in for this?
+   short screenMinX = (minX > 0) ? ((minX < imageWidth) ? minX : imageWidth) : 0;
+   short screenMaxX = (maxX > 0) ? ((maxX < imageWidth) ? maxX : imageWidth) : 0;
+   short screenMinY = (minY > 0) ? ((minY < imageHeight) ? minY : imageHeight) : 0;
+   short screenMaxY = (maxY > 0) ? ((maxY < imageHeight) ? maxY : imageHeight) : 0;
+   
+   float4 BB;
+   BB.w = screenMinX;
+   BB.x = screenMaxX;
+   BB.y = screenMinY;
+   BB.z = screenMaxY;
+   *BoundingBox = BB;
+}
+
+__global__ void kernelCirclePresent() {
+   int index = threadIdx.z;//Index of circle
+   int index4 = 4 * index;
+   float4 BB = *(float4*)(&cuConstRendererParams.BB[index4]);
+
+   int pixelY = blockIdx.y * blockDim.y + threadIdx.y;
+   int pixelX = blockIdx.x * blockDim.x + threadIdx.x;
+   //Array is arranged: for pixel(i,j): for circle(x)
+   float* Present = (float*)(&cuConstRendererParams.Present[index + (pixelY * cuConstRendererParams.imageWidth + pixelX)* cuConstRendererParams.numCircles]);
+   if (pixelX<BB.x && pixelX>=BB.w && pixelY<BB.z && pixelY>=BB.y) {
+      *Present = 1.f;
+   }
+
+}
 ////////////////////////////////////////////////////////////////////////////////////////
 
 
@@ -528,6 +578,8 @@ CudaRenderer::CudaRenderer() {
     cudaDeviceColor = NULL;
     cudaDeviceRadius = NULL;
     cudaDeviceImageData = NULL;
+    cudaDeviceBoundingBoxes = NULL;
+    cudaDevicePresent = NULL;
 }
 
 CudaRenderer::~CudaRenderer() {
@@ -549,6 +601,8 @@ CudaRenderer::~CudaRenderer() {
         cudaFree(cudaDeviceColor);
         cudaFree(cudaDeviceRadius);
         cudaFree(cudaDeviceImageData);
+        cudaFree(cudaDeviceBoundingBoxes);
+        cudaFree(cudaDevicePresent);
     }
 }
 
@@ -623,7 +677,11 @@ CudaRenderer::setup() {
     cudaMalloc(&cudaDeviceColor, sizeof(float) * 3 * numCircles);
     cudaMalloc(&cudaDeviceRadius, sizeof(float) * numCircles);
     cudaMalloc(&cudaDeviceImageData, sizeof(float) * 4 * image->width * image->height);
-    // cudaMalloc(&cudaDeviceBoundingBoxes, sizeof(float)*z )
+    //p, minX, maxX, minY, maxY 
+    cudaMalloc(&cudaDeviceBoundingBoxes, sizeof(float) * 4 * numCircles);
+    cudaMalloc(&cudaDevicePresent, sizeof(float) * image->width * image->height * numCircles);
+    cudaMemset(&cudaDeviceBoundingBoxes, 0, sizeof(float) * 4 * numCircles);
+    cudaMemset(&cudaDevicePresent, 0, sizeof(float) * image->width * image->height * numCircles);
 
     cudaMemcpy(cudaDevicePosition, position, sizeof(float) * 3 * numCircles, cudaMemcpyHostToDevice);
     cudaMemcpy(cudaDeviceVelocity, velocity, sizeof(float) * 3 * numCircles, cudaMemcpyHostToDevice);
@@ -648,6 +706,8 @@ CudaRenderer::setup() {
     params.color = cudaDeviceColor;
     params.radius = cudaDeviceRadius;
     params.imageData = cudaDeviceImageData;
+    params.BB = cudaDeviceBoundingBoxes;
+    params.Present = cudaDevicePresent;
 
     cudaMemcpyToSymbol(cuConstRendererParams, &params, sizeof(GlobalConstants));
 
