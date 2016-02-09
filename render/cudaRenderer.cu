@@ -329,13 +329,13 @@ __device__ inline int updiv(int n, int d) {
 // pixel from the circle.  Update of the image is done in this
 // function.  Called by kernelRenderCircles()
 __device__ __inline__ void
-shadePixel(int circleIndex, float2 pixelCenter, float3 p, float4* imagePtr) {
+shadePixel(int shared_circle_index, float2 pixelCenter, float3 p, float4* imagePtr) {
 
     float diffX = p.x - pixelCenter.x;
     float diffY = p.y - pixelCenter.y;
     float pixelDist = diffX * diffX + diffY * diffY;
 
-    float rad = cuConstRendererParams.radius[circleIndex];
+    float rad = cuConstRendererParams.radius[shared_circle_index];
     float maxDist = rad * rad;
 
     // circle does not contribute to the image
@@ -354,7 +354,7 @@ shadePixel(int circleIndex, float2 pixelCenter, float3 p, float4* imagePtr) {
     // kernelRenderCircles.  (If feeling good about yourself, you
     // could use some specialized template magic).
         // simple: each circle has an assigned color
-    int index3 = 3 * circleIndex;
+    int index3 = 3 * shared_circle_index;
     rgb = *(float3*)&(cuConstRendererParams.color[index3]);
     alpha = .5f;
 
@@ -389,12 +389,12 @@ overlapPoints(int P1x,int P1y, int P2x, int P2y, int P3x, int P3y, int P4x, int 
     // return (((X1<=x1 && x1<=X2) && (Y1<=y1 && y1<=Y2)) || ((X1<=x2 && x2<=X2) && (Y1<=y2 && y2<=Y2)) || ());
 }
 __device__ __inline__ void
-shadePixelsnow(int circleIndex, float2 pixelCenter, float3 p, float4* imagePtr) {
+shadePixelsnow(int shared_circle_index, float2 pixelCenter, float3 p, float4* imagePtr) {
     float diffX = p.x - pixelCenter.x;
     float diffY = p.y - pixelCenter.y;
     float pixelDist = diffX * diffX + diffY * diffY;
 
-    float rad = cuConstRendererParams.radius[circleIndex];
+    float rad = cuConstRendererParams.radius[shared_circle_index];
     float maxDist = rad * rad;
 
     // circle does not contribute to the image
@@ -448,199 +448,165 @@ shadePixelsnow(int circleIndex, float2 pixelCenter, float3 p, float4* imagePtr) 
 // resulting image will be incorrect.
 __global__ void kernelRenderCircles() {
 
-    //Calculate Block bounding Box
-    int blockYmin, blockYmax, blockXmin, blockXmax, circlesPerThread, numCircles;
-    blockYmin = (blockIdx.y * blockDim.y) ;
-    blockYmax = (blockIdx.y * blockDim.y) + blockDim.y;
-    blockXmin = (blockIdx.x * blockDim.x) ;
-    blockXmax = (blockIdx.x * blockDim.x) + blockDim.x;
-    numCircles = cuConstRendererParams.numCircles;
-    circlesPerThread = updiv(numCircles, THREADS_PER_BLOCK); //TODO: make this parametrized
-    int threadIndex =  (threadIdx.y * blockDim.x) + threadIdx.x;
-    int checkCircleStart = threadIndex * circlesPerThread;
-    int checkCircleEnd = checkCircleStart + circlesPerThread;
-    if (threadIndex == THREADS_PER_BLOCK-1)
-    {
-        checkCircleEnd = cuConstRendererParams.numCircles;
-    }
+    int pixelX = blockIdx.x * blockDim.x + threadIdx.x;
+    int pixelY = blockIdx.y * blockDim.y + threadIdx.y;
 
-     short  imageWidth, imageHeight;
-    float   invWidth, invHeight;
-    imageWidth = cuConstRendererParams.imageWidth;
-    imageHeight = cuConstRendererParams.imageHeight;
-    invWidth = 1.f / imageWidth;
-    invHeight = 1.f / imageHeight;
+    int blockYmin = (blockIdx.y * blockDim.y) ;
+    int blockYmax = (blockIdx.y * blockDim.y) + blockDim.y;
+    int blockXmin = (blockIdx.x * blockDim.x) ;
+    int blockXmax = (blockIdx.x * blockDim.x) + blockDim.x;
 
-    int circleAdded = 0;
-    // float* cirPtr;
-    // cudaMalloc(cirPtr, sizeof(float) * cuConstRendererParams.numCircles);
-    float*  __shared__ cirPtr; 
-    cirPtr = (float*)(&cuConstRendererParams.circleList[ ((blockIdx.x +(blockIdx.y * gridDim.y) ) * numCircles) ]);
-    uint __shared__ shared_no_of_circles[THREADS_PER_BLOCK];//Shared
-    __syncthreads();
+    int threadIndex = threadIdx.y * blockDim.x + threadIdx.x;
 
-    for (int index =checkCircleStart ; index < checkCircleEnd && index < numCircles; index++)
+    short imageWidth = cuConstRendererParams.imageWidth;
+    short imageHeight = cuConstRendererParams.imageHeight;
+    int numCircles = cuConstRendererParams.numCircles;
 
-    {   
-        int index3 = 3 * index;
-
-        // read position and radius
-        float3 p = *(float3*)(&cuConstRendererParams.position[index3]);
-        float  rad = cuConstRendererParams.radius[index];
-
-        // compute the bounding box of the circle. The bound is in integer
-        // screen coordinates, so it's clamped to the edges of the screen.
-        short minX = static_cast<short>(imageWidth * (p.x - rad));
-        short maxX = static_cast<short>(imageWidth * (p.x + rad)) + 1;
-        short minY = static_cast<short>(imageHeight * (p.y - rad));
-        short maxY = static_cast<short>(imageHeight * (p.y + rad)) + 1;
-
-        if (overlapPoints(minX,minY,maxX,maxY,blockXmin,blockYmin,blockXmax,blockYmax))
-        {
-          cirPtr[checkCircleStart+circleAdded] = index;
-          circleAdded++; //Add circle index to some array
-        }
-    }
-
-    circIndxptr[threadIndex] = circleAdded;
-    __syncthreads();
-    int pixelY = (blockIdx.y * blockDim.y) + threadIdx.y;
-    int pixelX = (blockIdx.x * blockDim.x) + threadIdx.x;
-  
-    //int circlesPerThread = cuConstRendererParams.numCircles/ THREADS_PER_BLOCK; //TODO: make this parametrized
-    //short imageWidth = cuConstRendererParams.imageWidth;
-    //short imageHeight = cuConstRendererParams.imageHeight;
     float invWidth = 1.f / imageWidth;
     float invHeight = 1.f / imageHeight;
-    
-    //float* cirPtr = (float*)(&cuConstRendererParams.circleList[ ((blockIdx.x +(blockIdx.y * gridDim.y) ) * (cuConstRendererParams.numCircles+THREADS_PER_BLOCK)) ]);
-    //float* circIndxptr = &cirPtr[cuConstRendererParams.numCircles];
-    float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth+pixelX)]);
-    float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
-                                             invHeight * (static_cast<float>(pixelY) + 0.5f));
-    int index=-1;
-    for (int i = 0; i < THREADS_PER_BLOCK&&index<numCircles; ++i)
-    {   
+
+     __shared__ uint shared_no_of_circles[THREADS_PER_BLOCK];
+     __shared__ uint shared_output[THREADS_PER_BLOCK];
+    volatile __shared__ uint shared_scratch[2 * THREADS_PER_BLOCK];
+    volatile __shared__ uint shared_circle_index[THREADS_PER_BLOCK];
+
+    int maxIter = (numCircles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
+
+    // for all circles
+    for (int i=0; i < maxIter; i++) {
+        int cIdx = i * THREADS_PER_BLOCK + threadIndex;
+        shared_no_of_circles[threadIndex] = 0;
+
+        if (cIdx < numCircles) {
+            int cIdx3 = 3 * cIdx;
+            float3 p = *(float3*)(&cuConstRendererParams.position[cIdx3]);
+            float  rad = cuConstRendererParams.radius[cIdx];
+
+            short minX = static_cast<short>(imageWidth * (p.x - rad));
+            short maxX = static_cast<short>(imageWidth * (p.x + rad)) + 1;
+            short minY = static_cast<short>(imageHeight * (p.y - rad));
+            short maxY = static_cast<short>(imageHeight * (p.y + rad)) + 1;
+
+
+                shared_no_of_circles[threadIndex] = (!(blockXmin > maxX || blockXmax < minX
+                || blockYmin > maxY || blockYmax < minY));
+            
+        } 
+
+        __syncthreads();
+
+        // need scan
+        sharedMemExclusiveScan(threadIndex, shared_no_of_circles, shared_output,
+                              shared_scratch, THREADS_PER_BLOCK);
+
+        __syncthreads();
+
+        int numOverBlkCircles = shared_output[THREADS_PER_BLOCK - 1];
+        if ( shared_no_of_circles[THREADS_PER_BLOCK - 1] == 1 )
+            numOverBlkCircles += 1;
+
+        if ( shared_no_of_circles[threadIndex] == 1 ) {
+            shared_circle_index[shared_output[threadIndex]] = threadIndex;
+        }
+
+        __syncthreads();
+        float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
+                                                         invHeight * (static_cast<float>(pixelY) + 0.5f));
+        float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth + pixelX)]);
+        float4 existingColor = *imgPtr;
+        for (int j=0; j < numOverBlkCircles; j++) {
+            int index = i * THREADS_PER_BLOCK + shared_circle_index[j];
+                float3 p = *(float3*)(&cuConstRendererParams.position[3 * index]);
+                shadePixel(index, pixelCenterNorm, p, &existingColor);
+        }
+
+        *imgPtr = existingColor;
 
         // __syncthreads();
-        for (int j = 0; j < shared_no_of_circles[i]&&index<numCircles; ++j)
-        {   
-            int indexNew = cirPtr[j+i*circlesPerThread];
-            // int indexNew = cirPtr[j+i*circlesPerThread];
-            // if (index>indexNew)
-            // {
-            //     continue;
-            // }
-            index = indexNew;
-
-            int index3 = 3 * index;
-
-            // read position and radius
-            float3 p = *(float3*)(&cuConstRendererParams.position[index3]);
-
-            shadePixel(index, pixelCenterNorm, p, imgPtr);    
-
-            
-        }
-        
     }
 
 }
 
 __global__ void kernelRenderCirclesSnow()  {
 
-        int pixelY = (blockIdx.y * blockDim.y) + threadIdx.y;
-    int pixelX = (blockIdx.x * blockDim.x) + threadIdx.x;
-    //Calculate Block bounding Box
-    __shared__ int blockYmin, blockYmax, blockXmin, blockXmax, circlesPerThread, numCircles;
-    blockYmin = (blockIdx.y * blockDim.y) ;
-    blockYmax = (blockIdx.y * blockDim.y) + blockDim.y;
-    blockXmin = (blockIdx.x * blockDim.x) ;
-    blockXmax = (blockIdx.x * blockDim.x) + blockDim.x;
-    numCircles = cuConstRendererParams.numCircles;
-    circlesPerThread = updiv(numCircles, THREADS_PER_BLOCK); //TODO: make this parametrized
-    int threadIndex =  (threadIdx.y * blockDim.x) + threadIdx.x;
-    int checkCircleStart = threadIndex * circlesPerThread;
-    int checkCircleEnd = checkCircleStart + circlesPerThread;
-    if (threadIndex == THREADS_PER_BLOCK-1)
-    {
-        checkCircleEnd = cuConstRendererParams.numCircles;
-    }
-    __shared__ short imageWidth, imageHeight;
-    __shared__ float invWidth, invHeight;
-    imageWidth = cuConstRendererParams.imageWidth;
-    imageHeight = cuConstRendererParams.imageHeight;
-    invWidth = 1.f / imageWidth;
-    invHeight = 1.f / imageHeight;
+    int pixelX = blockIdx.x * blockDim.x + threadIdx.x;
+    int pixelY = blockIdx.y * blockDim.y + threadIdx.y;
 
-    int circleAdded = 0;
-    // float* cirPtr;
-    // cudaMalloc(cirPtr, sizeof(float) * cuConstRendererParams.numCircles);
-    __shared__ float*  cirPtr; 
-    cirPtr = (float*)(&cuConstRendererParams.circleList[ ((blockIdx.x +(blockIdx.y * gridDim.y) ) * numCircles) ]);
-    __shared__ uint shared_no_of_circles[THREADS_PER_BLOCK];//Shared
-    __syncthreads();
+    int minX = blockIdx.x * blockDim.x;
+    int minY = blockIdx.y * blockDim.y;
+    int maxX = minX + blockDim.x;
+    int maxY = minY + blockDim.y;
 
-    for (int index =checkCircleStart ; index < checkCircleEnd && index < numCircles; index++)
+    short imageWidth = cuConstRendererParams.imageWidth;
+    short imageHeight = cuConstRendererParams.imageHeight;
+    int numCircles = cuConstRendererParams.numCircles;
 
-    {   
-        int index3 = 3 * index;
+    float invWidth = 1.f / imageWidth;
+    float invHeight = 1.f / imageHeight;
 
-        // read position and radius
-        float3 p = *(float3*)(&cuConstRendererParams.position[index3]);
-        float  rad = cuConstRendererParams.radius[index];
+    __shared__ uint shared_no_of_circles[THREADS_PER_BLOCK];
+    __shared__ uint shared_output[THREADS_PER_BLOCK];
+    __shared__ uint shared_scratch[2 * THREADS_PER_BLOCK];
+    __shared__ uint shared_circle_index[THREADS_PER_BLOCK];
 
-        // compute the bounding box of the circle. The bound is in integer
-        // screen coordinates, so it's clamped to the edges of the screen.
-        short minX = static_cast<short>(imageWidth * (p.x - rad));
-        short maxX = static_cast<short>(imageWidth * (p.x + rad)) + 1;
-        short minY = static_cast<short>(imageHeight * (p.y - rad));
-        short maxY = static_cast<short>(imageHeight * (p.y + rad)) + 1;
+    int maxIter = (numCircles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
 
-        // a bunch of clamps.  Is there a CUDA built-in for this?
-        short screenMinX = (minX > 0) ? ((minX < imageWidth) ? minX : imageWidth) : 0;
-        short screenMaxX = (maxX > 0) ? ((maxX < imageWidth) ? maxX : imageWidth) : 0;
-        short screenMinY = (minY > 0) ? ((minY < imageHeight) ? minY : imageHeight) : 0;
-        short screenMaxY = (maxY > 0) ? ((maxY < imageHeight) ? maxY : imageHeight) : 0;
-        // <circle overlaps with bounding box>
-        if (overlapPoints(screenMinX,screenMinY,screenMaxX,screenMaxY,blockXmin,blockYmin,blockXmax,blockYmax))
-        {
-          cirPtr[checkCircleStart+circleAdded] = index;
-          circleAdded++; //Add circle index to some array
-        }
-    }
+    // for all circles
+    for (int i=0; i < maxIter; i++) {
+        int threadIndex = threadIdx.y * blockDim.x + threadIdx.x;
+        int cIdx = i * THREADS_PER_BLOCK + threadIndex;
+        shared_no_of_circles[threadIndex] = 0;
 
-    shared_no_of_circles[threadIndex] = circleAdded;
-    // __syncthreads();
+        if (cIdx < numCircles) {
+            int cIdx3 = 3 * cIdx;
+            float3 c = *(float3*)(&cuConstRendererParams.position[cIdx3]);
+            float  rad = cuConstRendererParams.radius[cIdx];
 
-    float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth+pixelX)]);
-    float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
-                                             invHeight * (static_cast<float>(pixelY) + 0.5f));
-    int index=-1;
-    for (int i = 0; i < THREADS_PER_BLOCK&&index<numCircles; ++i)
-    {   
+            short blockXmin = static_cast<short>(imageWidth * (c.x - rad));
+            short blockXmax = static_cast<short>(imageWidth * (c.x + rad)) + 1;
+            short blockYmin = static_cast<short>(imageHeight * (c.y - rad));
+            short blockYmax = static_cast<short>(imageHeight * (c.y + rad)) + 1;
+
+
+                shared_no_of_circles[threadIndex] =  overlapPoints(blockXmin,blockYmin,blockXmax,blockYmax,minX,minY,maxX,maxY);
+            
+        } 
 
         __syncthreads();
-        for (int j = 0; j < shared_no_of_circles[i]&&index<numCircles; ++j)
-        {   
-            int indexNew = cirPtr[j+i*circlesPerThread];
-            // int indexNew = cirPtr[j+i*circlesPerThread];
-            if (index>indexNew)
-            {
-                continue;
-            }
-            index = indexNew;
 
-            int index3 = 3 * index;
+        // need scan
+        sharedMemExclusiveScan(threadIndex, shared_no_of_circles, shared_output,
+                              shared_scratch, THREADS_PER_BLOCK);
 
-            // read position and radius
-            float3 p = *(float3*)(&cuConstRendererParams.position[index3]);
+        __syncthreads();
 
-            shadePixelsnow(index, pixelCenterNorm, p, imgPtr);    
+        int numOverBlkCircles = shared_output[THREADS_PER_BLOCK - 1];
+        if ( shared_no_of_circles[THREADS_PER_BLOCK - 1] == 1 )
+            numOverBlkCircles += 1;
 
-            
+        if ( shared_no_of_circles[threadIndex] == 1 ) {
+            shared_circle_index[shared_output[threadIndex]] = threadIndex;
         }
-        
+
+        __syncthreads();
+
+        for (int j=0; j < numOverBlkCircles; j++) {
+            // if (pixelX >= imageWidth || pixelY >= imageHeight)
+            //     break;
+            float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
+                                                             invHeight * (static_cast<float>(pixelY) + 0.5f));
+            float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth + pixelX)]);
+
+            int index = i * THREADS_PER_BLOCK + shared_circle_index[j];
+            // if (index < numCircles) {
+                float3 p = *(float3*)(&cuConstRendererParams.position[3 * index]);
+                shadePixelsnow(index, pixelCenterNorm, p, imgPtr);
+            // } else {
+            //     break;
+            // }
+        }
+
+        // __syncthreads();
     }
 
 }
