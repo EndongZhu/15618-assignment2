@@ -14,7 +14,7 @@
 #include "sceneLoader.h"
 #include "util.h"
 
-#define NUM_THREADS 16
+#define NUM_THREADS 8
 #define THREADS_PER_BLOCK ((NUM_THREADS)*(NUM_THREADS))
 #define SCAN_BLOCK_DIM (THREADS_PER_BLOCK)
 #include "exclusiveScan.cu_inl"
@@ -441,7 +441,7 @@ shadePixelsnow(int circleIndex, float2 pixelCenter, float3 p, float4* imagePtr) 
 // ensure order of update or mutual exclusion on the output image, the
 // resulting image will be incorrect.
 __global__ void kernelRenderCircles() {
-    printf("HELLO\n" );
+    // printf("HELLO\n" );
 
     int pixelY = (blockIdx.y * blockDim.y) + threadIdx.y;
     int pixelX = (blockIdx.x * blockDim.x) + threadIdx.x;
@@ -462,55 +462,64 @@ __global__ void kernelRenderCircles() {
     float invHeight = 1.f / imageHeight;
 
     int circleAdded = 0;
-    int *circleProcessed = new int[circlesPerThread]; //TODO: Tune
+    int circleProcessed[3];//problem
+    // int *circleProcessed = new int[circlesPerThread]; //TODO: Tune
     __shared__ uint shared_no_of_circles[THREADS_PER_BLOCK];//Shared
     __shared__ uint output[THREADS_PER_BLOCK];
     volatile __shared__ uint scratch[2*THREADS_PER_BLOCK];
+    __shared__ uint all_circles_in_box[3]; //Shared
 
-    for (int index =checkCircleStart ; index < checkCircleEnd; index++)
-
+    // printf("%d\n",threadIndex );
+    if (threadIndex< cuConstRendererParams.numCircles)
     {
-        int index3 = 3 * index;
+        
+        // printf("%d %d\n",threadIndex, circlesPerThread);
 
-        // read position and radius
-        float3 p = *(float3*)(&cuConstRendererParams.position[index3]);
-        float  rad = cuConstRendererParams.radius[index];
+        for (int index =checkCircleStart ; index < checkCircleEnd && index < cuConstRendererParams.numCircles; index++)
 
-        // compute the bounding box of the circle. The bound is in integer
-        // screen coordinates, so it's clamped to the edges of the screen.
-        short minX = static_cast<short>(imageWidth * (p.x - rad));
-        short maxX = static_cast<short>(imageWidth * (p.x + rad)) + 1;
-        short minY = static_cast<short>(imageHeight * (p.y - rad));
-        short maxY = static_cast<short>(imageHeight * (p.y + rad)) + 1;
+        {   
+            int index3 = 3 * index;
 
-        // a bunch of clamps.  Is there a CUDA built-in for this?
-        short screenMinX = (minX > 0) ? ((minX < imageWidth) ? minX : imageWidth) : 0;
-        short screenMaxX = (maxX > 0) ? ((maxX < imageWidth) ? maxX : imageWidth) : 0;
-        short screenMinY = (minY > 0) ? ((minY < imageHeight) ? minY : imageHeight) : 0;
-        short screenMaxY = (maxY > 0) ? ((maxY < imageHeight) ? maxY : imageHeight) : 0;
-        // <circle overlaps with bounding box>
-        if (overlapPoints(screenMinX,screenMinY,screenMaxX,screenMaxY,blockXmin,blockYmin,blockXmax,blockYmax))
-        {
-          circleProcessed[circleAdded] = index;
-          circleAdded++; //Add circle index to some array
+            // read position and radius
+            float3 p = *(float3*)(&cuConstRendererParams.position[index3]);
+            float  rad = cuConstRendererParams.radius[index];
+
+            // compute the bounding box of the circle. The bound is in integer
+            // screen coordinates, so it's clamped to the edges of the screen.
+            short minX = static_cast<short>(imageWidth * (p.x - rad));
+            short maxX = static_cast<short>(imageWidth * (p.x + rad)) + 1;
+            short minY = static_cast<short>(imageHeight * (p.y - rad));
+            short maxY = static_cast<short>(imageHeight * (p.y + rad)) + 1;
+
+            // a bunch of clamps.  Is there a CUDA built-in for this?
+            short screenMinX = (minX > 0) ? ((minX < imageWidth) ? minX : imageWidth) : 0;
+            short screenMaxX = (maxX > 0) ? ((maxX < imageWidth) ? maxX : imageWidth) : 0;
+            short screenMinY = (minY > 0) ? ((minY < imageHeight) ? minY : imageHeight) : 0;
+            short screenMaxY = (maxY > 0) ? ((maxY < imageHeight) ? maxY : imageHeight) : 0;
+            // <circle overlaps with bounding box>
+            if (overlapPoints(screenMinX,screenMinY,screenMaxX,screenMaxY,blockXmin,blockYmin,blockXmax,blockYmax))
+            {
+              circleProcessed[circleAdded] = index;
+              circleAdded++; //Add circle index to some array
+            }
         }
-    }
     
-
-    shared_no_of_circles[threadIndex] = circleAdded;
-    __syncthreads();
-
-    //TODO exclusive scan on shared_no_of_circles to get total count
-    sharedMemExclusiveScan(threadIndex, shared_no_of_circles, output, scratch, THREADS_PER_BLOCK);
-    __syncthreads();
-    int totalCirclesInBox = output[THREADS_PER_BLOCK-1] + shared_no_of_circles[THREADS_PER_BLOCK-1];
-    printf("%d\n",totalCirclesInBox );
-    //Build list of shared indexes of circles
-    __shared__ uint all_circles_in_box[10]; //Shared
-    uint offset = output[threadIndex];
-    for (int i = 0; i < circleAdded; i++) {
-      all_circles_in_box[offset+i] = circleProcessed[i];
     }
+        shared_no_of_circles[threadIndex] = circleAdded;
+        __syncthreads();
+
+        //TODO exclusive scan on shared_no_of_circles to get total count
+        sharedMemExclusiveScan(threadIndex, shared_no_of_circles, output, scratch, THREADS_PER_BLOCK);
+        __syncthreads();
+    
+        int totalCirclesInBox = output[THREADS_PER_BLOCK-1] + shared_no_of_circles[THREADS_PER_BLOCK-1];
+        printf("totalCirclesInBox %d\n",totalCirclesInBox );
+        //Build list of shared indexes of circles
+        uint offset = output[threadIndex];
+        for (int i = 0; i < circleAdded; i++) {
+          all_circles_in_box[offset+i] = circleProcessed[i];
+        }
+    
      __syncthreads();
     //Loop over all circles
 
@@ -519,6 +528,8 @@ __global__ void kernelRenderCircles() {
                                              invHeight * (static_cast<float>(pixelY) + 0.5f));
     
     for (int i = 0; i < totalCirclesInBox; i++) {
+
+        printf("%d %d\n", threadIndex, i);
         //calculate all_circles_in_box[i]
         int index = all_circles_in_box[i];
         int index3 = 3 * index;
@@ -545,9 +556,7 @@ __global__ void kernelRenderCircles() {
         {
             shadePixel(index, pixelCenterNorm, p, imgPtr);    
         }
-  }
-
-
+    }
 }
 
 __global__ void kernelRenderCirclesSnow() {
@@ -752,8 +761,7 @@ CudaRenderer::setup() {
     cudaMalloc(&cudaDeviceColor, sizeof(float) * 3 * numCircles);
     cudaMalloc(&cudaDeviceRadius, sizeof(float) * numCircles);
     cudaMalloc(&cudaDeviceImageData, sizeof(float) * 4 * image->width * image->height);
-    //p, minX, maxX, minY, maxY 
-
+    // cudaMalloc(&cudaDeviceBoundingBoxes, sizeof(float)*z )
 
     cudaMemcpy(cudaDevicePosition, position, sizeof(float) * 3 * numCircles, cudaMemcpyHostToDevice);
     cudaMemcpy(cudaDeviceVelocity, velocity, sizeof(float) * 3 * numCircles, cudaMemcpyHostToDevice);
@@ -777,6 +785,7 @@ CudaRenderer::setup() {
     params.velocity = cudaDeviceVelocity;
     params.color = cudaDeviceColor;
     params.radius = cudaDeviceRadius;
+    params.imageData = cudaDeviceImageData;
 
     cudaMemcpyToSymbol(cuConstRendererParams, &params, sizeof(GlobalConstants));
 
@@ -864,8 +873,9 @@ CudaRenderer::advanceAnimation() {
 void
 CudaRenderer::render() {
 
-    dim3 blockDim(NUM_THREADS, NUM_THREADS,1);
-    dim3 gridDim(updivHost(image->width,blockDim.x),updivHost(image->height,blockDim.y),1);
+    dim3 blockDim(NUM_THREADS, NUM_THREADS);
+    dim3 gridDim(updivHost(image->width,blockDim.x),updivHost(image->height,blockDim.y));
+    printf("%d %d\n", gridDim.x, gridDim.y);
     if (sceneName == SNOWFLAKES || sceneName == SNOWFLAKES_SINGLE_FRAME) {
         kernelRenderCirclesSnow<<<gridDim, blockDim>>>();
     } else {
@@ -873,5 +883,8 @@ CudaRenderer::render() {
         kernelRenderCircles<<<gridDim, blockDim>>>();
         // printf("%d\n", x);
     }
+    printf("Ran unaligned_kernel: %s\n",
+    cudaGetErrorString(cudaGetLastError()));
+    printf("Sync: %s\n", cudaGetErrorString(cudaThreadSynchronize()));
     
 }
