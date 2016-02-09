@@ -36,8 +36,7 @@ struct GlobalConstants {
     int imageWidth;
     int imageHeight;
     float* imageData;
-    float* BB;
-    float* Present;
+    float* circleList;
 };
 
 // Global variable that is in scope, but read-only, for all cuda
@@ -449,7 +448,6 @@ shadePixelsnow(int circleIndex, float2 pixelCenter, float3 p, float4* imagePtr) 
 // ensure order of update or mutual exclusion on the output image, the
 // resulting image will be incorrect.
 __global__ void kernelRenderCircles() {
-    // printf("HELLO\n" );
 
     int pixelY = (blockIdx.y * blockDim.y) + threadIdx.y;
     int pixelX = (blockIdx.x * blockDim.x) + threadIdx.x;
@@ -473,55 +471,44 @@ __global__ void kernelRenderCircles() {
     float invHeight = 1.f / imageHeight;
 
     int circleAdded = 0;
-    __shared__ int circleProcessed[10];//problem
-    // int *circleProcessed = new int[circlesPerThread]; //TODO: Tune
+    float* cirPtr = (float*)(&cuConstRendererParams.circleList[ ((blockIdx.x +(blockIdx.y * gridDim.y) ) * cuConstRendererParams.numCircles) ]);
     __shared__ uint shared_no_of_circles[THREADS_PER_BLOCK];//Shared
 
+    for (int index =checkCircleStart ; index < checkCircleEnd && index < cuConstRendererParams.numCircles; index++)
 
-    // printf("%d\n",threadIndex );
-    
-        
-        // printf("%d %d\n",threadIndex, circlesPerThread);
+    {   
+        int index3 = 3 * index;
 
-        for (int index =checkCircleStart ; index < checkCircleEnd && index < cuConstRendererParams.numCircles; index++)
+        // read position and radius
+        float3 p = *(float3*)(&cuConstRendererParams.position[index3]);
+        float  rad = cuConstRendererParams.radius[index];
 
-        {   
-            int index3 = 3 * index;
+        // compute the bounding box of the circle. The bound is in integer
+        // screen coordinates, so it's clamped to the edges of the screen.
+        short minX = static_cast<short>(imageWidth * (p.x - rad));
+        short maxX = static_cast<short>(imageWidth * (p.x + rad)) + 1;
+        short minY = static_cast<short>(imageHeight * (p.y - rad));
+        short maxY = static_cast<short>(imageHeight * (p.y + rad)) + 1;
 
-            // read position and radius
-            float3 p = *(float3*)(&cuConstRendererParams.position[index3]);
-            float  rad = cuConstRendererParams.radius[index];
-
-            // compute the bounding box of the circle. The bound is in integer
-            // screen coordinates, so it's clamped to the edges of the screen.
-            short minX = static_cast<short>(imageWidth * (p.x - rad));
-            short maxX = static_cast<short>(imageWidth * (p.x + rad)) + 1;
-            short minY = static_cast<short>(imageHeight * (p.y - rad));
-            short maxY = static_cast<short>(imageHeight * (p.y + rad)) + 1;
-
-            // a bunch of clamps.  Is there a CUDA built-in for this?
-            short screenMinX = (minX > 0) ? ((minX < imageWidth) ? minX : imageWidth) : 0;
-            short screenMaxX = (maxX > 0) ? ((maxX < imageWidth) ? maxX : imageWidth) : 0;
-            short screenMinY = (minY > 0) ? ((minY < imageHeight) ? minY : imageHeight) : 0;
-            short screenMaxY = (maxY > 0) ? ((maxY < imageHeight) ? maxY : imageHeight) : 0;
-            // <circle overlaps with bounding box>
-            if (overlapPoints(screenMinX,screenMinY,screenMaxX,screenMaxY,blockXmin,blockYmin,blockXmax,blockYmax))
-            {
-              circleProcessed[checkCircleStart+circleAdded] = index;
-              circleAdded++; //Add circle index to some array
-            }
+        // a bunch of clamps.  Is there a CUDA built-in for this?
+        short screenMinX = (minX > 0) ? ((minX < imageWidth) ? minX : imageWidth) : 0;
+        short screenMaxX = (maxX > 0) ? ((maxX < imageWidth) ? maxX : imageWidth) : 0;
+        short screenMinY = (minY > 0) ? ((minY < imageHeight) ? minY : imageHeight) : 0;
+        short screenMaxY = (maxY > 0) ? ((maxY < imageHeight) ? maxY : imageHeight) : 0;
+        // <circle overlaps with bounding box>
+        if (overlapPoints(screenMinX,screenMinY,screenMaxX,screenMaxY,blockXmin,blockYmin,blockXmax,blockYmax))
+        {
+          cirPtr[checkCircleStart+circleAdded] = index;
+          circleAdded++; //Add circle index to some array
         }
-    
-        __syncthreads();
-        shared_no_of_circles[threadIndex] = circleAdded;
-        __syncthreads();
+    }
 
-        
+    shared_no_of_circles[threadIndex] = circleAdded;
+    __syncthreads();
 
     float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth+pixelX)]);
     float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
                                              invHeight * (static_cast<float>(pixelY) + 0.5f));
-    // printf("%d %d %d %d %d\n",blockIdx.x, blockIdx.y, threadIdx.x, threadIdx.y,totalCirclesInBox);
     int index=0;
     for (int i = 0; i < THREADS_PER_BLOCK; ++i)
     {   
@@ -534,7 +521,7 @@ __global__ void kernelRenderCircles() {
         for (int j = 0; j < shared_no_of_circles[i]; ++j)
         {   
 
-            index = circleProcessed[j+i*    circlesPerThread];
+            index = cirPtr[j+i*circlesPerThread];
             
             if (index>=cuConstRendererParams.numCircles)
             {
@@ -612,54 +599,6 @@ __global__ void kernelRenderCirclesSnow() {
 
 }
 
-//NotNEEDED//__global__ void kernelCircleBB() {
-//NotNEEDED//   int index = (blockIdx.x * blockDim.x) + threadIdx.x;
-//NotNEEDED//   int index3 = 3 * index;
-//NotNEEDED//   int index4 = 4 * index;
-//NotNEEDED//
-//NotNEEDED//   // read position and radius
-//NotNEEDED//   float3 p = *(float3*)(&cuConstRendererParams.position[index3]);
-//NotNEEDED//   float  rad = cuConstRendererParams.radius[index];
-//NotNEEDED//   //
-//NotNEEDED//   float4 *BoundingBox = (float4*)(&cuConstRendererParams.BB[index4]);
-//NotNEEDED//
-//NotNEEDED//   // compute the bounding box of the circle. The bound is in integer
-//NotNEEDED//   // screen coordinates, so it's clamped to the edges of the screen.
-//NotNEEDED//   short imageWidth = cuConstRendererParams.imageWidth;
-//NotNEEDED//   short imageHeight = cuConstRendererParams.imageHeight;
-//NotNEEDED//   short minX = static_cast<short>(imageWidth * (p.x - rad));
-//NotNEEDED//   short maxX = static_cast<short>(imageWidth * (p.x + rad)) + 1;
-//NotNEEDED//   short minY = static_cast<short>(imageHeight * (p.y - rad));
-//NotNEEDED//   short maxY = static_cast<short>(imageHeight * (p.y + rad)) + 1;
-//NotNEEDED//
-//NotNEEDED//   // a bunch of clamps.  Is there a CUDA built-in for this?
-//NotNEEDED//   short screenMinX = (minX > 0) ? ((minX < imageWidth) ? minX : imageWidth) : 0;
-//NotNEEDED//   short screenMaxX = (maxX > 0) ? ((maxX < imageWidth) ? maxX : imageWidth) : 0;
-//NotNEEDED//   short screenMinY = (minY > 0) ? ((minY < imageHeight) ? minY : imageHeight) : 0;
-//NotNEEDED//   short screenMaxY = (maxY > 0) ? ((maxY < imageHeight) ? maxY : imageHeight) : 0;
-//NotNEEDED//   
-//NotNEEDED//   float4 BB;
-//NotNEEDED//   BB.w = screenMinX;
-//NotNEEDED//   BB.x = screenMaxX;
-//NotNEEDED//   BB.y = screenMinY;
-//NotNEEDED//   BB.z = screenMaxY;
-//NotNEEDED//   *BoundingBox = BB;
-//NotNEEDED//}
-//NotNEEDED//
-//NotNEEDED//__global__ void kernelCirclePresent() {
-//NotNEEDED//   int index = threadIdx.z;//Index of circle
-//NotNEEDED//   int index4 = 4 * index;
-//NotNEEDED//   float4 BB = *(float4*)(&cuConstRendererParams.BB[index4]);
-//NotNEEDED//
-//NotNEEDED//   int pixelY = blockIdx.y * blockDim.y + threadIdx.y;
-//NotNEEDED//   int pixelX = blockIdx.x * blockDim.x + threadIdx.x;
-//NotNEEDED//   //Array is arranged: for pixel(i,j): for circle(x)
-//NotNEEDED//   float* Present = (float*)(&cuConstRendererParams.Present[index + (pixelY * cuConstRendererParams.imageWidth + pixelX)* cuConstRendererParams.numCircles]);
-//NotNEEDED//   if (pixelX<BB.x && pixelX>=BB.w && pixelY<BB.z && pixelY>=BB.y) {
-//NotNEEDED//      *Present = 1.f;
-//NotNEEDED//   }
-//NotNEEDED//
-//NotNEEDED//}
 ////////////////////////////////////////////////////////////////////////////////////////
 
 
@@ -677,6 +616,8 @@ CudaRenderer::CudaRenderer() {
     cudaDeviceColor = NULL;
     cudaDeviceRadius = NULL;
     cudaDeviceImageData = NULL;
+    cudaDeviceCircleList = NULL;
+
 }
 
 CudaRenderer::~CudaRenderer() {
@@ -698,6 +639,7 @@ CudaRenderer::~CudaRenderer() {
         cudaFree(cudaDeviceColor);
         cudaFree(cudaDeviceRadius);
         cudaFree(cudaDeviceImageData);
+        cudaFree(cudaDeviceCircleList);
     }
 }
 
@@ -772,12 +714,13 @@ CudaRenderer::setup() {
     cudaMalloc(&cudaDeviceColor, sizeof(float) * 3 * numCircles);
     cudaMalloc(&cudaDeviceRadius, sizeof(float) * numCircles);
     cudaMalloc(&cudaDeviceImageData, sizeof(float) * 4 * image->width * image->height);
-    // cudaMalloc(&cudaDeviceBoundingBoxes, sizeof(float)*z )
+    cudaMalloc(&cudaDeviceCircleList, sizeof(float) * numCircles * updivHost(image->width,NUM_THREADS) * updivHost(image->height,NUM_THREADS));
 
     cudaMemcpy(cudaDevicePosition, position, sizeof(float) * 3 * numCircles, cudaMemcpyHostToDevice);
     cudaMemcpy(cudaDeviceVelocity, velocity, sizeof(float) * 3 * numCircles, cudaMemcpyHostToDevice);
     cudaMemcpy(cudaDeviceColor, color, sizeof(float) * 3 * numCircles, cudaMemcpyHostToDevice);
     cudaMemcpy(cudaDeviceRadius, radius, sizeof(float) * numCircles, cudaMemcpyHostToDevice);
+    cudaMemset(&cudaDeviceCircleList,0, sizeof(float) * numCircles * updivHost(image->width,NUM_THREADS) * updivHost(image->height,NUM_THREADS));
 
     // Initialize parameters in constant memory.  We didn't talk about
     // constant memory in class, but the use of read-only constant
@@ -797,6 +740,7 @@ CudaRenderer::setup() {
     params.color = cudaDeviceColor;
     params.radius = cudaDeviceRadius;
     params.imageData = cudaDeviceImageData;
+    params.circleList = cudaDeviceCircleList;
 
     cudaMemcpyToSymbol(cuConstRendererParams, &params, sizeof(GlobalConstants));
 
@@ -886,16 +830,11 @@ CudaRenderer::render() {
 
     dim3 blockDim(NUM_THREADS, NUM_THREADS);
     dim3 gridDim(updivHost(image->width,blockDim.x),updivHost(image->height,blockDim.y));
-    printf("%d %d\n", gridDim.x, gridDim.y);
     if (sceneName == SNOWFLAKES || sceneName == SNOWFLAKES_SINGLE_FRAME) {
         kernelRenderCirclesSnow<<<gridDim, blockDim>>>();
     } else {
-        printf("YES\n");
         kernelRenderCircles<<<gridDim, blockDim>>>();
-        // printf("%d\n", x);
     }
-    printf("Ran unaligned_kernel: %s\n",
-    cudaGetErrorString(cudaGetLastError()));
-    printf("Sync: %s\n", cudaGetErrorString(cudaThreadSynchronize()));
+    cudaGetErrorString(cudaGetLastError());
     
 }
