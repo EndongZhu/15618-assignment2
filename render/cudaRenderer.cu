@@ -14,7 +14,7 @@
 #include "sceneLoader.h"
 #include "util.h"
 
-#define NUM_THREADS 8
+#define NUM_THREADS 16
 #define THREADS_PER_BLOCK ((NUM_THREADS)*(NUM_THREADS))
 #define SCAN_BLOCK_DIM (THREADS_PER_BLOCK)
 #include "exclusiveScan.cu_inl"
@@ -379,8 +379,16 @@ shadePixel(int circleIndex, float2 pixelCenter, float3 p, float4* imagePtr) {
 }
 
 __device__ __inline__ int
-overlapPoints(int x1,int y1, int x2, int y2, int X1, int Y1, int X2, int Y2){
-    return (((X1<=x1 && x1<=X2) && (Y1<=y1 && y1<=Y2)) || ((X1<=x2 && x2<=X2) && (Y1<=y2 && y2<=Y2)));
+overlapPoints(int P1x,int P1y, int P2x, int P2y, int P3x, int P3y, int P4x, int P4y){
+
+    if (! ( P2y < P3y || P1y > P4y || P2x < P3x || P1x > P4x ))
+        return 1;
+
+ 
+    return 0;
+
+
+    // return (((X1<=x1 && x1<=X2) && (Y1<=y1 && y1<=Y2)) || ((X1<=x2 && x2<=X2) && (Y1<=y2 && y2<=Y2)) || ());
 }
 __device__ __inline__ void
 shadePixelsnow(int circleIndex, float2 pixelCenter, float3 p, float4* imagePtr) {
@@ -465,12 +473,12 @@ __global__ void kernelRenderCircles() {
     float invHeight = 1.f / imageHeight;
 
     int circleAdded = 0;
-    int circleProcessed[3];//problem
+    int circleProcessed[3000];//problem
     // int *circleProcessed = new int[circlesPerThread]; //TODO: Tune
     __shared__ uint shared_no_of_circles[THREADS_PER_BLOCK];//Shared
     __shared__ uint output[THREADS_PER_BLOCK];
     volatile __shared__ uint scratch[2*THREADS_PER_BLOCK];
-    __shared__ uint all_circles_in_box[3]; //Shared
+    __shared__ uint all_circles_in_box[3000]; //Shared
 
     // printf("%d\n",threadIndex );
     
@@ -515,7 +523,7 @@ __global__ void kernelRenderCircles() {
         __syncthreads();
     
         int totalCirclesInBox = output[THREADS_PER_BLOCK-1] + shared_no_of_circles[THREADS_PER_BLOCK-1];
-        printf("totalCirclesInBox %d\n",totalCirclesInBox );
+        // printf("totalCirclesInBox %d\n",totalCirclesInBox );
         //Build list of shared indexes of circles
         uint offset = output[threadIndex];
         for (int i = 0; i < circleAdded; i++) {
@@ -528,10 +536,10 @@ __global__ void kernelRenderCircles() {
     float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth+pixelX)]);
     float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
                                              invHeight * (static_cast<float>(pixelY) + 0.5f));
-    
+    // printf("%d %d %d %d %d\n",blockIdx.x, blockIdx.y, threadIdx.x, threadIdx.y,totalCirclesInBox);
     for (int i = 0; i < totalCirclesInBox; i++) {
 
-        printf("%d %d\n", threadIndex, i);
+        
         //calculate all_circles_in_box[i]
         int index = all_circles_in_box[i];
         int index3 = 3 * index;
