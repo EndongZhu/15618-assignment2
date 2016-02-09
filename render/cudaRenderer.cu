@@ -473,12 +473,10 @@ __global__ void kernelRenderCircles() {
     float invHeight = 1.f / imageHeight;
 
     int circleAdded = 0;
-    int circleProcessed[3000];//problem
+    __shared__ int circleProcessed[10];//problem
     // int *circleProcessed = new int[circlesPerThread]; //TODO: Tune
     __shared__ uint shared_no_of_circles[THREADS_PER_BLOCK];//Shared
-    __shared__ uint output[THREADS_PER_BLOCK];
-    volatile __shared__ uint scratch[2*THREADS_PER_BLOCK];
-    __shared__ uint all_circles_in_box[3000]; //Shared
+
 
     // printf("%d\n",threadIndex );
     
@@ -509,64 +507,67 @@ __global__ void kernelRenderCircles() {
             // <circle overlaps with bounding box>
             if (overlapPoints(screenMinX,screenMinY,screenMaxX,screenMaxY,blockXmin,blockYmin,blockXmax,blockYmax))
             {
-              circleProcessed[circleAdded] = index;
+              circleProcessed[checkCircleStart+circleAdded] = index;
               circleAdded++; //Add circle index to some array
             }
         }
     
-    
+        __syncthreads();
         shared_no_of_circles[threadIndex] = circleAdded;
         __syncthreads();
 
-        //TODO exclusive scan on shared_no_of_circles to get total count
-        sharedMemExclusiveScan(threadIndex, shared_no_of_circles, output, scratch, THREADS_PER_BLOCK);
-        __syncthreads();
-    
-        int totalCirclesInBox = output[THREADS_PER_BLOCK-1] + shared_no_of_circles[THREADS_PER_BLOCK-1];
-        // printf("totalCirclesInBox %d\n",totalCirclesInBox );
-        //Build list of shared indexes of circles
-        uint offset = output[threadIndex];
-        for (int i = 0; i < circleAdded; i++) {
-          all_circles_in_box[offset+i] = circleProcessed[i];
-        }
-    
-     __syncthreads();
-    //Loop over all circles
+        
 
     float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth+pixelX)]);
     float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
                                              invHeight * (static_cast<float>(pixelY) + 0.5f));
     // printf("%d %d %d %d %d\n",blockIdx.x, blockIdx.y, threadIdx.x, threadIdx.y,totalCirclesInBox);
-    for (int i = 0; i < totalCirclesInBox; i++) {
+    int index=0;
+    for (int i = 0; i < THREADS_PER_BLOCK; ++i)
+    {   
 
-        
-        //calculate all_circles_in_box[i]
-        int index = all_circles_in_box[i];
-        int index3 = 3 * index;
-
-        // read position and radius
-        float3 p = *(float3*)(&cuConstRendererParams.position[index3]);
-        float  rad = cuConstRendererParams.radius[index];
-
-        // compute the bounding box of the circle. The bound is in integer
-        // screen coordinates, so it's clamped to the edges of the screen.
-        short minX = static_cast<short>(imageWidth * (p.x - rad));
-        short maxX = static_cast<short>(imageWidth * (p.x + rad)) + 1;
-        short minY = static_cast<short>(imageHeight * (p.y - rad));
-        short maxY = static_cast<short>(imageHeight * (p.y + rad)) + 1;
-
-        // a bunch of clamps.  Is there a CUDA built-in for this?
-        short screenMinX = (minX > 0) ? ((minX < imageWidth) ? minX : imageWidth) : 0;
-        short screenMaxX = (maxX > 0) ? ((maxX < imageWidth) ? maxX : imageWidth) : 0;
-        short screenMinY = (minY > 0) ? ((minY < imageHeight) ? minY : imageHeight) : 0;
-        short screenMaxY = (maxY > 0) ? ((maxY < imageHeight) ? maxY : imageHeight) : 0;
-
-
-        if (pixelX<screenMaxX && pixelX>=screenMinX && pixelY<screenMaxY && pixelY>=screenMinY)
+        if (index>=cuConstRendererParams.numCircles)
         {
-            shadePixel(index, pixelCenterNorm, p, imgPtr);    
+            break;
+        }
+
+        for (int j = 0; j < shared_no_of_circles[i]; ++j)
+        {   
+
+            index = circleProcessed[j+i*    circlesPerThread];
+            
+            if (index>=cuConstRendererParams.numCircles)
+            {
+                break;
+            }
+
+            int index3 = 3 * index;
+
+            // read position and radius
+            float3 p = *(float3*)(&cuConstRendererParams.position[index3]);
+            float  rad = cuConstRendererParams.radius[index];
+
+            // compute the bounding box of the circle. The bound is in integer
+            // screen coordinates, so it's clamped to the edges of the screen.
+            short minX = static_cast<short>(imageWidth * (p.x - rad));
+            short maxX = static_cast<short>(imageWidth * (p.x + rad)) + 1;
+            short minY = static_cast<short>(imageHeight * (p.y - rad));
+            short maxY = static_cast<short>(imageHeight * (p.y + rad)) + 1;
+
+            // a bunch of clamps.  Is there a CUDA built-in for this?
+            short screenMinX = (minX > 0) ? ((minX < imageWidth) ? minX : imageWidth) : 0;
+            short screenMaxX = (maxX > 0) ? ((maxX < imageWidth) ? maxX : imageWidth) : 0;
+            short screenMinY = (minY > 0) ? ((minY < imageHeight) ? minY : imageHeight) : 0;
+            short screenMaxY = (maxY > 0) ? ((maxY < imageHeight) ? maxY : imageHeight) : 0;
+
+
+            if (pixelX<screenMaxX && pixelX>=screenMinX && pixelY<screenMaxY && pixelY>=screenMinY)
+            {
+                shadePixel(index, pixelCenterNorm, p, imgPtr);    
+            }
         }
     }
+
 }
 
 __global__ void kernelRenderCirclesSnow() {
