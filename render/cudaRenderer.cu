@@ -14,7 +14,7 @@
 #include "sceneLoader.h"
 #include "util.h"
 
-#define NUM_THREADS 16
+#define NUM_THREADS 32
 #define THREADS_PER_BLOCK ((NUM_THREADS)*(NUM_THREADS))
 #define SCAN_BLOCK_DIM (THREADS_PER_BLOCK)
 
@@ -777,6 +777,8 @@ CudaRenderer::setup() {
     cudaMemcpy(cudaDeviceVelocity, velocity, sizeof(float) * 3 * numCircles, cudaMemcpyHostToDevice);
     cudaMemcpy(cudaDeviceColor, color, sizeof(float) * 3 * numCircles, cudaMemcpyHostToDevice);
     cudaMemcpy(cudaDeviceRadius, radius, sizeof(float) * numCircles, cudaMemcpyHostToDevice);
+
+    cudaMemset(cudaDeviceCircleList,0.f, sizeof(float) * numCircles * updivHost(image->width,NUM_THREADS) * updivHost(image->height,NUM_THREADS));
 
     // Initialize parameters in constant memory.  We didn't talk about
     // constant memory in class, but the use of read-only constant
