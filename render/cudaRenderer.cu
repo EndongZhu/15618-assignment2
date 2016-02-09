@@ -329,20 +329,19 @@ __device__ inline int updiv(int n, int d) {
 // pixel from the circle.  Update of the image is done in this
 // function.  Called by kernelRenderCircles()
 __device__ __inline__ void
-shadePixel(int shared_circle_index, float2 pixelCenter, float3 p, float4* imagePtr) {
+shadePixel( float2 pixelCenter, float3 p, float4* imagePtr, float rad, float3 rgb) {
 
     float diffX = p.x - pixelCenter.x;
     float diffY = p.y - pixelCenter.y;
     float pixelDist = diffX * diffX + diffY * diffY;
 
-    float rad = cuConstRendererParams.radius[shared_circle_index];
+    // float rad = cuConstRendererParams.radius[shared_circle_index];
     float maxDist = rad * rad;
 
     // circle does not contribute to the image
     if (pixelDist > maxDist)
         return;
 
-    float3 rgb;
     float alpha;
 
     // there is a non-zero contribution.  Now compute the shading value
@@ -354,8 +353,8 @@ shadePixel(int shared_circle_index, float2 pixelCenter, float3 p, float4* imageP
     // kernelRenderCircles.  (If feeling good about yourself, you
     // could use some specialized template magic).
         // simple: each circle has an assigned color
-    int index3 = 3 * shared_circle_index;
-    rgb = *(float3*)&(cuConstRendererParams.color[index3]);
+    // int index3 = 3 * shared_circle_index;
+    // rgb = *(float3*)&(cuConstRendererParams.color[index3]);
     alpha = .5f;
 
     float oneMinusAlpha = 1.f - alpha;
@@ -469,7 +468,9 @@ __global__ void kernelRenderCircles() {
      __shared__ uint shared_output[THREADS_PER_BLOCK];
     volatile __shared__ uint shared_scratch[2 * THREADS_PER_BLOCK];
     volatile __shared__ uint shared_circle_index[THREADS_PER_BLOCK];
-
+    __shared__ float3 position[THREADS_PER_BLOCK];
+    __shared__ float radii[THREADS_PER_BLOCK];
+    __shared__ float3 colors[THREADS_PER_BLOCK];
     int maxIter = (numCircles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
 
     // for all circles
@@ -481,15 +482,19 @@ __global__ void kernelRenderCircles() {
             int cIdx3 = 3 * cIdx;
             float3 p = *(float3*)(&cuConstRendererParams.position[cIdx3]);
             float  rad = cuConstRendererParams.radius[cIdx];
-
             short minX = static_cast<short>(imageWidth * (p.x - rad));
             short maxX = static_cast<short>(imageWidth * (p.x + rad)) + 1;
             short minY = static_cast<short>(imageHeight * (p.y - rad));
             short maxY = static_cast<short>(imageHeight * (p.y + rad)) + 1;
 
 
-                shared_no_of_circles[threadIndex] = (!(blockXmin > maxX || blockXmax < minX
-                || blockYmin > maxY || blockYmax < minY));
+                if(!(blockXmin > maxX || blockXmax < minX
+                || blockYmin > maxY || blockYmax < minY)){
+                    shared_no_of_circles[threadIndex]=1;
+                    radii[threadIndex] = rad;
+                    position[threadIndex] = p;
+                    colors[threadIndex] = *(float3*)(&cuConstRendererParams.color[cIdx3]);
+                }
             
         } 
 
@@ -516,13 +521,14 @@ __global__ void kernelRenderCircles() {
         float4 existingColor = *imgPtr;
         for (int j=0; j < numOverBlkCircles; j++) {
             int index = i * THREADS_PER_BLOCK + shared_circle_index[j];
-                float3 p = *(float3*)(&cuConstRendererParams.position[3 * index]);
-                shadePixel(index, pixelCenterNorm, p, &existingColor);
+                float3 p = position[shared_circle_index[j]];
+                float rad = radii[shared_circle_index[j]];
+                float3 color = colors[shared_circle_index[j]];
+                shadePixel(pixelCenterNorm, p, &existingColor,rad, color);
         }
 
         *imgPtr = existingColor;
 
-        // __syncthreads();
     }
 
 }
@@ -591,22 +597,17 @@ __global__ void kernelRenderCirclesSnow()  {
         __syncthreads();
 
         for (int j=0; j < numOverBlkCircles; j++) {
-            // if (pixelX >= imageWidth || pixelY >= imageHeight)
-            //     break;
+
             float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
                                                              invHeight * (static_cast<float>(pixelY) + 0.5f));
             float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth + pixelX)]);
 
             int index = i * THREADS_PER_BLOCK + shared_circle_index[j];
-            // if (index < numCircles) {
                 float3 p = *(float3*)(&cuConstRendererParams.position[3 * index]);
                 shadePixelsnow(index, pixelCenterNorm, p, imgPtr);
-            // } else {
-            //     break;
-            // }
+
         }
 
-        // __syncthreads();
     }
 
 }
