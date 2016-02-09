@@ -451,11 +451,14 @@ __global__ void kernelRenderCircles() {
     int blockXmin = (blockIdx.x * blockDim.x) ;
     int blockXmax = (blockIdx.x * blockDim.x) + blockDim.x;
 
-    int circlesPerThread = updiv(cuConstRendererParams.numCircles,  THREADS_PER_BLOCK); //TODO: make this parametrized
+    int circlesPerThread = cuConstRendererParams.numCircles/ THREADS_PER_BLOCK; //TODO: make this parametrized
     int threadIndex =  (threadIdx.y * blockDim.x) + threadIdx.x;
     int checkCircleStart = threadIndex * circlesPerThread;
     int checkCircleEnd = checkCircleStart + circlesPerThread;
-
+    if (threadIndex == THREADS_PER_BLOCK-1)
+    {
+        checkCircleEnd = cuConstRendererParams.numCircles;
+    }
     short imageWidth = cuConstRendererParams.imageWidth;
     short imageHeight = cuConstRendererParams.imageHeight;
     float invWidth = 1.f / imageWidth;
@@ -470,8 +473,7 @@ __global__ void kernelRenderCircles() {
     __shared__ uint all_circles_in_box[3]; //Shared
 
     // printf("%d\n",threadIndex );
-    if (threadIndex< cuConstRendererParams.numCircles)
-    {
+    
         
         // printf("%d %d\n",threadIndex, circlesPerThread);
 
@@ -504,7 +506,7 @@ __global__ void kernelRenderCircles() {
             }
         }
     
-    }
+    
         shared_no_of_circles[threadIndex] = circleAdded;
         __syncthreads();
 
