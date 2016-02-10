@@ -471,10 +471,12 @@ __global__ void kernelRenderCircles() {
     __shared__ float3 position[THREADS_PER_BLOCK];
     __shared__ float radii[THREADS_PER_BLOCK];
     __shared__ float3 colors[THREADS_PER_BLOCK];
-    int maxIter = (numCircles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
-
-    // for all circles
-    for (int i=0; i < maxIter; i++) {
+    int circlesPerThread = updiv(numCircles,THREADS_PER_BLOCK);
+    float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
+                                                     invHeight * (static_cast<float>(pixelY) + 0.5f));
+    float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth + pixelX)]);
+    float4 existingColor = *imgPtr;
+    for (int i=0; i < circlesPerThread; i++) {
         int cIdx = i * THREADS_PER_BLOCK + threadIndex;
         shared_no_of_circles[threadIndex] = 0;
 
@@ -500,7 +502,6 @@ __global__ void kernelRenderCircles() {
 
         __syncthreads();
 
-        // need scan
         sharedMemExclusiveScan(threadIndex, shared_no_of_circles, shared_output,
                               shared_scratch, THREADS_PER_BLOCK);
 
@@ -515,10 +516,7 @@ __global__ void kernelRenderCircles() {
         }
 
         __syncthreads();
-        float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
-                                                         invHeight * (static_cast<float>(pixelY) + 0.5f));
-        float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth + pixelX)]);
-        float4 existingColor = *imgPtr;
+        
         for (int j=0; j < numOverBlkCircles; j++) {
             int index = i * THREADS_PER_BLOCK + shared_circle_index[j];
                 float3 p = position[shared_circle_index[j]];
@@ -527,13 +525,15 @@ __global__ void kernelRenderCircles() {
                 shadePixel(pixelCenterNorm, p, &existingColor,rad, color);
         }
 
-        *imgPtr = existingColor;
 
     }
+    *imgPtr = existingColor;
+
 
 }
 
 __global__ void kernelRenderCirclesSnow()  {
+
 
     int pixelX = blockIdx.x * blockDim.x + threadIdx.x;
     int pixelY = blockIdx.y * blockDim.y + threadIdx.y;
@@ -557,7 +557,10 @@ __global__ void kernelRenderCirclesSnow()  {
 
     int maxIter = (numCircles + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
 
-    // for all circles
+    float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
+                                                     invHeight * (static_cast<float>(pixelY) + 0.5f));
+
+
     for (int i=0; i < maxIter; i++) {
         int threadIndex = threadIdx.y * blockDim.x + threadIdx.x;
         int cIdx = i * THREADS_PER_BLOCK + threadIndex;
@@ -580,7 +583,6 @@ __global__ void kernelRenderCirclesSnow()  {
 
         __syncthreads();
 
-        // need scan
         sharedMemExclusiveScan(threadIndex, shared_no_of_circles, shared_output,
                               shared_scratch, THREADS_PER_BLOCK);
 
@@ -597,18 +599,19 @@ __global__ void kernelRenderCirclesSnow()  {
         __syncthreads();
 
         for (int j=0; j < numOverBlkCircles; j++) {
-
-            float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
-                                                             invHeight * (static_cast<float>(pixelY) + 0.5f));
             float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth + pixelX)]);
 
             int index = i * THREADS_PER_BLOCK + shared_circle_index[j];
                 float3 p = *(float3*)(&cuConstRendererParams.position[3 * index]);
                 shadePixelsnow(index, pixelCenterNorm, p, imgPtr);
+                // *imgPtr = existingColor;
+
 
         }
 
     }
+
+
 
 }
 
